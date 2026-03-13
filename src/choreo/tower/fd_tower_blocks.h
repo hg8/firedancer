@@ -40,7 +40,6 @@ struct fd_tower_blk {
   fd_hash_t voted_block_id;     /* the block_id we voted on for this slot */
   int       confirmed;          /* whether this slot has been duplicate confirmed */
   fd_hash_t confirmed_block_id; /* the block_id that was duplicate confirmed */
-  ulong     bank_idx;           /* pool idx of the bank as of this replayed block */
 };
 typedef struct fd_tower_blk fd_tower_blk_t;
 

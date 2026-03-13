@@ -105,7 +105,6 @@ struct __attribute__((aligned(128UL))) fd_ghost_blk {
   ulong     sibling;     /* pool idx of the right-sibling */
   ulong     stake;       /* sum of stake that has voted for this slot or any of its descendants */
   ulong     total_stake; /* total stake for this blk */
-  int       eqvoc;       /* whether this block is equivocating. if so, it is invalid for fork choice unless duplicate confirmed */
   int       conf;        /* whether this block is "duplicate confirmed" via gossip votes (>= 52% of stake) */
   int       valid;       /* whether this block is valid for fork choice. an equivocating block is valid iff duplicate confirmed */
 };
@@ -283,6 +282,9 @@ void
 fd_ghost_publish( fd_ghost_t     * ghost,
                   fd_ghost_blk_t * newr );
 
+ulong
+fd_ghost_active_fork_cnt( fd_ghost_t * ghost );
+
 /* Misc */
 
 /* fd_ghost_verify checks the ghost is not obviously corrupt.  Returns 0
@@ -313,25 +315,37 @@ fd_ghost_to_cstr( fd_ghost_t const *     ghost,
                   ulong                  cstr_max,
                   ulong *                cstr_len );
 
-/* fd_ghost_bfs_iter_{init,next} exposes an API to level-order traverse
-   the ghost tree starting from a given head.  During traversal, each
-   node is visited once and removed from the map while it is in the BFS
-   queue.  This is done to reuse the .next pointer of the node while it
-   is in the queue.  After each node is visited, it is re-inserted into
-   the map.  As such, the caller cannot early exit from the BFS loop to
-   ensure all nodes are re-inserted into the map, or they must manually
-   re-insert the nodes into the map.
+/* fd_ghost_bfs_iter_{init,next,done,cleanup} exposes an API to
+   level-order traverse the ghost tree starting from a given head.
+   During traversal, each node is visited once and removed from the map
+   while it is in the BFS queue.  This is done to reuse the .next
+   pointer of the node while it is in the queue.  After each node is
+   visited, it is re-inserted into the map on the next iter_next call.
+   As such, the caller is responsible for ensuring all nodes in the
+   queue are re-inserted into the ghost map if there is any early
+   exiting from the BFS loop. At any exit point from the loop, the
+   caller must call fd_ghost_bfs_iter_cleanup to ensure all nodes are
+   re-inserted into the map.
 
    Usage:
 
    fd_ghost_blk_t * head = fd_ghost_bfs_iter_init( ghost, head );
    fd_ghost_blk_t * tail = head; // must be initialized to head
 
-   while( FD_LIKELY( head ) ) {
+   while( FD_LIKELY( fd_ghost_bfs_iter_done( head ) ) ) {
      // do something with head //
-     head = fd_ghost_bfs_iter_next( ghost, head, &tail );
+     head = fd_ghost_bfs_iter_next( ghost, head, add_children, &tail );
+     if( return_early ) {
+      fd_ghost_bfs_iter_cleanup( ghost, head );
+      return;
+     }
    }
-*/
+
+   iter_next takes a parameter to indicate whether to add the children
+   of head node to the queue.  If include_subtree is 0, effectively the
+   entire subtree starting from root=head will not be traversed.
+   Ownership of head is still returned to ghost map. */
+
 fd_ghost_blk_t *
 fd_ghost_bfs_iter_init( fd_ghost_t     * ghost,
                         fd_ghost_blk_t * head );
@@ -339,7 +353,15 @@ fd_ghost_bfs_iter_init( fd_ghost_t     * ghost,
 fd_ghost_blk_t *
 fd_ghost_bfs_iter_next( fd_ghost_t     *  ghost,
                         fd_ghost_blk_t *  head,
+                        int               include_subtree,
                         fd_ghost_blk_t ** tail );
+
+int
+fd_ghost_bfs_iter_done( fd_ghost_blk_t * head );
+
+void
+fd_ghost_bfs_iter_cleanup( fd_ghost_t     * ghost,
+                           fd_ghost_blk_t * head );
 
 
 FD_PROTOTYPES_END
