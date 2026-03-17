@@ -35,7 +35,7 @@ struct fd_tower_blk {
   ulong     parent_slot;        /* parent slot */
   ulong     epoch;              /* epoch of this slot */
   int       replayed;           /* whether we've replayed this slot yet */
-  fd_hash_t replayed_block_id;  /* the block_id we _first_ replayed for this slot */
+  fd_hash_t replayed_block_id;  /* the block_id we _last_ replayed for this slot */
   int       voted;              /* whether we voted for this slot yet */
   fd_hash_t voted_block_id;     /* the block_id we voted on for this slot */
   int       confirmed;          /* whether this slot has been duplicate confirmed */

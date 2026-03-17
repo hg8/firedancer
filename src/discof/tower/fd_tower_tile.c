@@ -768,15 +768,17 @@ replay_slot_completed( fd_tower_tile_t *            ctx,
        notes in fd_replay_tile.h).
 
        So we retain the existing tower_block we have (which contains the
-       first replayed_block_id as well as the voted_block_id if we did
-       indeed vote for it).  We clear out the slot from the other tower
-       adjacent structures, and re-insert into them with the confirmed
-       version of the slot . */
+       first voted_block_id if we did indeed vote for it).  We update
+       the replayed_block_id to the newer replayed version, and also
+       update the parent if it is different.  We clear out the slot from
+       the other tower adjacent structures, and re-insert into them with
+       the confirmed version of the slot. */
 
     FD_TEST( eqvoc_tower_blk->confirmed ); /* check the confirmed bit is set (second replay_slot_completed version must be confirmed) */
     fd_tower_lockos_remove( ctx->tower_lockos, slot_completed->slot );
     fd_tower_stakes_remove( ctx->tower_stakes, slot_completed->slot );
-    eqvoc_tower_blk->parent_slot = slot_completed->parent_slot;
+    eqvoc_tower_blk->parent_slot       = slot_completed->parent_slot;
+    eqvoc_tower_blk->replayed_block_id = slot_completed->block_id;
 
     ctx->metrics.slot_eqvoced_cnt++;
     ctx->metrics.slot_eqvoced_gauge = slot_completed->slot;

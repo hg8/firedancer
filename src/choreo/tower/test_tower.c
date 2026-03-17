@@ -620,6 +620,7 @@ test_switch_eqvoc( fd_wksp_t * wksp ) {
   blk6->confirmed = 1;
   blk6->confirmed_block_id = (fd_hash_t){.ul = {6, 1}};
   blk6->parent_slot = 1;
+  blk6->replayed_block_id = (fd_hash_t){.ul = {6, 1}};
   fd_ghost_insert( ghost, &(fd_hash_t){.ul = {6, 1}}, &(fd_hash_t){.ul = {1}}, 6 );
 
   FD_TEST( switch_check( tower, ghost, forks, lockos, tower_stakes, total_stake, 7 ) == 0 ); /* would fail since 8 is not a candidate anymore */

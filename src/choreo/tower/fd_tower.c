@@ -243,10 +243,7 @@ switch_check( fd_tower_t const  * tower,
        structures.  None of the nodes on this subtree can be considered
        for the switch proof. */
 
-    fd_hash_t const * canonical_bid = fd_tower_blocks_canonical_block_id( blocks, blk->slot );
-    if( FD_LIKELY( memcmp( &fd_tower_blocks_query( blocks, blk->slot )->replayed_block_id, canonical_bid, sizeof(fd_hash_t) )
-                   && memcmp( &blk->id, canonical_bid, sizeof(fd_hash_t) )
-                   && !blk->conf ) ) {
+    if( FD_UNLIKELY( memcmp( &fd_tower_blocks_query( blocks, blk->slot )->replayed_block_id, &blk->id, sizeof(fd_hash_t) ) ) ) {
       /* equivocating block & this is not the confirmed version. */
       head = fd_ghost_bfs_iter_next( ghost, head, 0 /* add_children */, &tail );
       continue;
