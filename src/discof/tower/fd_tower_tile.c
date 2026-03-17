@@ -750,7 +750,7 @@ replay_slot_completed( fd_tower_tile_t *            ctx,
     our_vote_acct_bal = fd_accdb_ref_lamports( ro );
     fd_memcpy( ctx->our_vote_acct, fd_accdb_ref_data_const( ro ), ctx->our_vote_acct_sz );
     fd_accdb_close_ro( ctx->accdb, ro );
-    fd_tower_reconcile( ctx->tower, ctx->root_slot, ctx->our_vote_acct );
+    fd_tower_reconcile( ctx->tower, ctx->root_slot, ctx->our_vote_acct, ctx->tower_blocks );
   }
 
   /* Check for equivocation (already received a replay_slot_completed
