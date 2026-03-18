@@ -231,7 +231,7 @@ snapshot_path_gui_publish( fd_snapct_tile_t *  ctx,
 static void
 predict_incremental( fd_snapct_tile_t * ctx ) {
   if( FD_UNLIKELY( !ctx->config.incremental_snapshots ) ) return;
-  if( FD_UNLIKELY( ctx->predicted_incremental.full_slot==ULONG_MAX ) ) return;
+  if( FD_UNLIKELY( ctx->predicted_incremental.full_slot==FD_SSPEER_SLOT_UNKNOWN ) ) return;
 
   fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 1, ctx->predicted_incremental.full_slot );
 
@@ -296,11 +296,11 @@ on_snapshot_hash( fd_snapct_tile_t *                 ctx,
                   fd_ip4_port_t                      addr,
                   fd_gossip_update_message_t const * msg ) {
   ulong         full_slot = msg->snapshot_hashes->full_slot;
-  ulong         incr_slot = 0UL;
+  ulong         incr_slot = FD_SSPEER_SLOT_UNKNOWN;
   uchar const * incr_hash = NULL;
 
   for( ulong i=0UL; i<msg->snapshot_hashes->incremental_len; i++ ) {
-    if( FD_LIKELY( msg->snapshot_hashes->incremental[ i ].slot>incr_slot ) ) {
+    if( FD_LIKELY( !incr_hash || msg->snapshot_hashes->incremental[ i ].slot>incr_slot ) ) {
       incr_slot = msg->snapshot_hashes->incremental[ i ].slot;
       incr_hash = msg->snapshot_hashes->incremental[ i ].hash;
     }
@@ -313,7 +313,9 @@ on_snapshot_hash( fd_snapct_tile_t *                 ctx,
     fd_sspeer_selector_remove( ctx->selector, key );
     return;
   }
-  fd_sspeer_selector_add( ctx->selector, key, addr, ULONG_MAX, full_slot, incr_slot, msg->snapshot_hashes->full_hash, incr_hash );
+  if( FD_UNLIKELY( FD_SSPEER_SCORE_INVALID==fd_sspeer_selector_add( ctx->selector, key, addr, FD_SSPEER_LATENCY_UNKNOWN,
+                                                                    full_slot, incr_slot,
+                                                                    msg->snapshot_hashes->full_hash, incr_hash ) ) ) return;
   fd_sspeer_selector_process_cluster_slot( ctx->selector, full_slot, incr_slot );
   predict_incremental( ctx );
 }
@@ -596,7 +598,7 @@ after_credit( fd_snapct_tile_t *  ctx,
     case FD_SNAPCT_STATE_WAITING_FOR_PEERS: {
       if( FD_UNLIKELY( now>ctx->deadline_nanos ) ) FD_LOG_ERR(( "timed out waiting for peers." ));
 
-      fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 0, ULONG_MAX );
+      fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 0, FD_SSPEER_SLOT_UNKNOWN );
       if( FD_LIKELY( best.addr.l ) ) {
         ctx->state = FD_SNAPCT_STATE_COLLECTING_PEERS;
         ctx->deadline_nanos = now+FD_SNAPCT_COLLECTING_PEERS_TIMEOUT;
@@ -608,7 +610,7 @@ after_credit( fd_snapct_tile_t *  ctx,
     case FD_SNAPCT_STATE_WAITING_FOR_PEERS_INCREMENTAL: {
       if( FD_UNLIKELY( now>ctx->deadline_nanos ) ) FD_LOG_ERR(( "timed out waiting for incremental snapshot peers." ));
 
-      FD_TEST( ctx->predicted_incremental.full_slot!=ULONG_MAX );
+      FD_TEST( ctx->predicted_incremental.full_slot!=FD_SSPEER_SLOT_UNKNOWN );
       fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 1, ctx->predicted_incremental.full_slot );
       if( FD_LIKELY( best.addr.l ) ) {
         ctx->state = FD_SNAPCT_STATE_COLLECTING_PEERS_INCREMENTAL;
@@ -621,7 +623,7 @@ after_credit( fd_snapct_tile_t *  ctx,
     case FD_SNAPCT_STATE_COLLECTING_PEERS: {
       if( FD_UNLIKELY( !ctx->gossip.saturated && now<ctx->deadline_nanos ) ) break;
 
-      fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 0, ULONG_MAX );
+      fd_sspeer_t best = fd_sspeer_selector_best( ctx->selector, 0, FD_SSPEER_SLOT_UNKNOWN );
       if( FD_UNLIKELY( !best.addr.l ) ) {
         if( !ctx->gossip_enabled ) {
           FD_LOG_ERR(( "no peers are available and discovery of new peers via gossip is disabled. aborting." ));
@@ -632,9 +634,9 @@ after_credit( fd_snapct_tile_t *  ctx,
       }
 
       fd_sscluster_slot_t cluster = fd_sspeer_selector_cluster_slot( ctx->selector );
-      if( FD_UNLIKELY( cluster.incremental==ULONG_MAX && ctx->config.incremental_snapshots ) ) {
+      if( FD_UNLIKELY( cluster.incremental==FD_SSPEER_SLOT_UNKNOWN && ctx->config.incremental_snapshots ) ) {
         /* We must have a cluster full slot to be in this state. */
-        FD_TEST( cluster.full!=ULONG_MAX );
+        FD_TEST( cluster.full!=FD_SSPEER_SLOT_UNKNOWN );
         /* fall back to full snapshot only if the highest cluster slot
            is a full snapshot only */
         FD_LOG_WARNING(( "incremental snapshots were enabled via [snapshots.incremental_snapshots], but no incremental snapshot is available in the cluster. "
@@ -1179,8 +1181,9 @@ gossip_frag( fd_snapct_tile_t *  ctx,
         entry_key.is_url  = 0;
         if( FD_LIKELY( !!new_addr.l ) ) {
           fd_ssping_add( ctx->ssping, new_addr );
-          /* update address */
-          fd_sspeer_selector_add( ctx->selector, &entry_key, new_addr, ULONG_MAX, ULONG_MAX, ULONG_MAX, NULL, NULL );
+          if( FD_UNLIKELY( FD_SSPEER_SCORE_INVALID==fd_sspeer_selector_add( ctx->selector, &entry_key, new_addr,
+                                                                            FD_SSPEER_LATENCY_UNKNOWN, FD_SSPEER_SLOT_UNKNOWN,
+                                                                            FD_SSPEER_SLOT_UNKNOWN, NULL, NULL ) ) ) break;
         } else {
           fd_sspeer_selector_remove( ctx->selector, &entry_key );
         }
@@ -1657,8 +1660,8 @@ unprivileged_init( fd_topo_t *      topo,
   FD_TEST( has_snapld_dc && has_ack_loopback );
   FD_TEST( ctx->gossip_enabled==(ctx->gossip_in_mem!=NULL) );
 
-  ctx->predicted_incremental.full_slot = ULONG_MAX;
-  ctx->predicted_incremental.slot      = ULONG_MAX;
+  ctx->predicted_incremental.full_slot = FD_SSPEER_SLOT_UNKNOWN;
+  ctx->predicted_incremental.slot      = FD_SSPEER_SLOT_UNKNOWN;
   ctx->predicted_incremental.pending   = 0;
 
   fd_memset( &ctx->metrics, 0, sizeof(ctx->metrics) );
