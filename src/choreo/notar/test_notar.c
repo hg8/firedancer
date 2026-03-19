@@ -1,85 +1,235 @@
-#include "fd_notar.h"
+#include "fd_notar.c"
 
-// void
-// test_update_voters( fd_wksp_t * wksp ) {
-//   ulong  slot_max = 8;
+#define SCRATCH_MAX (1UL<<22)
+static uchar scratch[ SCRATCH_MAX ] __attribute__((aligned(128)));
 
-//   void * notar_mem = fd_wksp_alloc_laddr( wksp, fd_notar_align(), fd_notar_footprint( slot_max ), 1UL );
-//   fd_notar_t * notar = fd_notar_join( fd_notar_new( notar_mem, slot_max ) );
-//   FD_TEST( notar );
+/* Register voters manually (bypassing update_voters which needs
+   tower_stakes). */
 
-//   void * tower_voters_mem = fd_wksp_alloc_laddr( wksp, fd_tower_voters_align(), fd_tower_voters_footprint( FD_VOTER_MAX ), 1UL );
-//   fd_tower_voters_t * tower_voters = fd_tower_voters_join( fd_tower_voters_new( tower_voters_mem, FD_VOTER_MAX ) );
-//   FD_TEST( tower_voters );
+static void
+register_voters( fd_notar_t * notar, fd_pubkey_t * voters, ulong * stakes, ulong cnt ) {
+  for( ulong i = 0; i < cnt; i++ ) {
+    vtr_t * v      = vtr_pool_ele_acquire( notar->vtr_pool );
+    v->vote_acc    = voters[i];
+    v->bit         = i;
+    v->stake       = stakes[i];
+    vtr_map_ele_insert( notar->vtr_map, v, notar->vtr_pool );
+    vtr_dlist_ele_push_tail( notar->vtr_dlist, v, notar->vtr_pool );
+  }
+}
 
-//   fd_tower_voters_t acct = { .addr = (fd_pubkey_t){ .key = { 1 } }, .stake = 10 };
-//   fd_tower_voters_push_tail( tower_voters, acct );
+void
+test_notar_simple( void ) {
+  ulong slot_max = 8;
+  ulong vtr_max  = 4;
 
-//   /* Voter should be accts. */
+  FD_TEST( fd_notar_footprint( slot_max, vtr_max ) <= SCRATCH_MAX );
+  fd_notar_t * notar = fd_notar_join( fd_notar_new( scratch, slot_max, vtr_max, 0 ) );
+  FD_TEST( notar );
 
-//   fd_notar_publish( notar, 431998 );
+  fd_pubkey_t voters[2] = { { .ul = { 1 } }, { .ul = { 2 } } };
+  ulong       stakes[2] = { 10, 51 };
+  register_voters( notar, voters, stakes, 2 );
 
-//   fd_notar_update_voters( notar, tower_voters, 1 );
-//   FD_TEST( fd_notar_vtr_query( notar->vtr_map, acct.addr, NULL ) ); /* populate vtr map */
-//   FD_TEST( fd_notar_count_vote( notar, &acct.addr, 431999, &((fd_hash_t){ .ul = { 431999 } }) ) );
+  fd_notar_publish( notar, 100 );
 
-//   /* Evict the voter from accts. */
+  /* Count a vote from voter_a for slot 101. */
 
-//   fd_tower_voters_pop_head( tower_voters );
-//   fd_notar_update_voters( notar, tower_voters, 2 );
-//   FD_TEST( !fd_notar_count_vote( notar, &acct.addr, 432000, &((fd_hash_t){ .ul = { 432000 } }) ) );
+  fd_hash_t block_id_a = { .ul = { 200 } };
+  fd_notar_blk_t * blk = fd_notar_count_vote( notar, &voters[0], 101, &block_id_a );
+  FD_TEST( blk );
+  FD_TEST( blk->stake==10 );
+  FD_TEST( blk->slot==101 );
 
-//   // fd_hash_t block_id  = { .ul = { slot } };
-//   // ulong     slot      = 368778153;
-//   // fd_hash_t bank_hash = { .ul = { slot } };
+  /* Count a vote from voter_b for same slot 101, same block_id. */
 
-//   // fd_notar_blk_t * blk = fd_notar_blk_insert( notar->blk, block_id );
-//   // blk->parent_slot     = slot - 1;
-//   // blk->bank_hash       = bank_hash;
-//   // blk->block_id        = block_id;
-//   // blk->stake           = 0;
-//   // blk->pro_conf        = 0;
-//   // blk->dup_conf        = 0;
-//   // blk->opt_conf        = 0;
-//   // blk->sup_conf        = 0;
+  blk = fd_notar_count_vote( notar, &voters[1], 101, &block_id_a );
+  FD_TEST( blk );
+  FD_TEST( blk->stake==61 );
 
-//   // fd_pubkey_t pubkeys[4] = { { .key = { 1 } },
-//   //                            { .key = { 2 } },
-//   //                            { .key = { 3 } },
-//   //                            { .key = { 4 } } };
-//   // for( ulong i = 0; i < sizeof(pubkeys) / sizeof(fd_pubkey_t); i++ ) {
-//   //   fd_notar_vtr_t * vtr = fd_notar_vtr_insert( notar->vtr, pubkeys[i] );
-//   //   vtr->bit = i;
-//   // }
+  /* voter_a tries to vote again for slot 101 — rejected. */
 
-//   // ulong stakes[4] = { 1, 2, 3, 4 };
+  fd_hash_t block_id_b = { .ul = { 201 } };
+  FD_TEST( !fd_notar_count_vote( notar, &voters[0], 101, &block_id_b ) );
 
-//   // mem = fd_wksp_alloc_laddr( wksp, fd_tower_align(), fd_tower_footprint(), 1UL );
-//   // FD_TEST( mem );
-//   // fd_tower_t * tower = fd_tower_join( fd_tower_new( mem ) );
-//   // fd_tower_vote( tower, 368778153 );
+  /* voter_a votes for a different slot 102. */
 
-//   // fd_notar_vote( notar, &pubkeys[3], tower,  ); /* first valid vote */
+  blk = fd_notar_count_vote( notar, &voters[0], 102, &block_id_b );
+  FD_TEST( blk );
+  FD_TEST( blk->stake==10 );
 
-//   fd_wksp_free_laddr( fd_notar_delete( fd_notar_leave( notar ) ) );
-// }
+  /* Query blk by block_id. */
+
+  FD_TEST( fd_notar_blk_query( notar, &block_id_a ) );
+  FD_TEST( fd_notar_blk_query( notar, &block_id_b ) );
+
+  /* Publish root to 102 — slot 101 and its blks should be removed. */
+
+  fd_notar_publish( notar, 102 );
+  FD_TEST( !fd_notar_blk_query( notar, &block_id_a ) );
+  FD_TEST(  fd_notar_blk_query( notar, &block_id_b ) );
+  FD_TEST(  fd_notar_root( notar )==102 );
+
+  fd_notar_delete( fd_notar_leave( notar ) );
+}
+
+/* Stress test: attacker tries to spam many different block ids for a
+   single slot.  Each voter can only vote once per slot, so an attacker
+   with N sybil voters can create at most N distinct block ids for a
+   given slot.  Each block id only accumulates the attacker's own stake
+   (1 per sybil), so none should reach any confirmation threshold. */
+
+void
+test_notar_spam_block_ids_per_slot( void ) {
+  ulong slot_max     = 8;
+  ulong vtr_max      = 64;
+  ulong attacker_cnt = 32;
+
+  FD_TEST( fd_notar_footprint( slot_max, vtr_max ) <= SCRATCH_MAX );
+  fd_notar_t * notar = fd_notar_join( fd_notar_new( scratch, slot_max, vtr_max, 0 ) );
+  FD_TEST( notar );
+
+  fd_pubkey_t voters[64];
+  ulong       stakes[64];
+  for( ulong i = 0; i < vtr_max; i++ ) {
+    voters[i] = (fd_pubkey_t){ .ul = { i+1 } };
+    stakes[i] = 1;
+  }
+  register_voters( notar, voters, stakes, vtr_max );
+  fd_notar_publish( notar, 100 );
+
+  ulong target_slot = 101;
+
+  /* Each attacker votes for a DIFFERENT block_id on the same slot. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 1000+i } };
+    fd_notar_blk_t * blk = fd_notar_count_vote( notar, &voters[i], target_slot, &block_id );
+    FD_TEST( blk );
+    FD_TEST( blk->stake==1 );
+  }
+
+  /* Each block_id exists but has only stake=1. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 1000+i } };
+    fd_notar_blk_t * blk = fd_notar_blk_query( notar, &block_id );
+    FD_TEST( blk );
+    FD_TEST( blk->stake==1 );
+  }
+
+  /* Each attacker tries to re-vote — all rejected. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 2000+i } };
+    FD_TEST( !fd_notar_count_vote( notar, &voters[i], target_slot, &block_id ) );
+  }
+
+  /* Honest voters vote for the real block_id.  Their stake accumulates
+     correctly and is unaffected by the attacker spam. */
+
+  fd_hash_t honest_block_id = { .ul = { 9999 } };
+  for( ulong i = attacker_cnt; i < vtr_max; i++ ) {
+    fd_notar_blk_t * blk = fd_notar_count_vote( notar, &voters[i], target_slot, &honest_block_id );
+    FD_TEST( blk );
+    FD_TEST( blk->stake==(i - attacker_cnt + 1) );
+  }
+
+  fd_notar_blk_t * honest_blk = fd_notar_blk_query( notar, &honest_block_id );
+  FD_TEST( honest_blk );
+  FD_TEST( honest_blk->stake==(vtr_max - attacker_cnt) );
+
+  /* Publish cleans up all block ids. */
+
+  fd_notar_publish( notar, target_slot + 1 );
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 1000+i } };
+    FD_TEST( !fd_notar_blk_query( notar, &block_id ) );
+  }
+  FD_TEST( !fd_notar_blk_query( notar, &honest_block_id ) );
+
+  fd_notar_delete( fd_notar_leave( notar ) );
+}
+
+/* Stress test: attacker sprays votes across many slots with different
+   block ids.  Votes outside the valid range [root, root+slot_max]
+   should be rejected.  Unknown voters should be rejected. */
+
+void
+test_notar_spam_many_slots( void ) {
+  ulong slot_max     = 8;
+  ulong vtr_max      = 16;
+  ulong attacker_cnt = 8;
+
+  FD_TEST( fd_notar_footprint( slot_max, vtr_max ) <= SCRATCH_MAX );
+  fd_notar_t * notar = fd_notar_join( fd_notar_new( scratch, slot_max, vtr_max, 0 ) );
+  FD_TEST( notar );
+
+  fd_pubkey_t voters[16];
+  ulong       stakes[16];
+  for( ulong i = 0; i < vtr_max; i++ ) {
+    voters[i] = (fd_pubkey_t){ .ul = { i+1 } };
+    stakes[i] = 1;
+  }
+  register_voters( notar, voters, stakes, vtr_max );
+  fd_notar_publish( notar, 100 );
+
+  /* Each attacker votes for a different slot, unique block_id. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    ulong slot = 101 + i;
+    fd_hash_t block_id = { .ul = { 3000+i } };
+    fd_notar_blk_t * blk = fd_notar_count_vote( notar, &voters[i], slot, &block_id );
+    if( slot < 100 + slot_max ) {
+      FD_TEST( blk );
+      FD_TEST( blk->stake==1 );
+    } else {
+      FD_TEST( !blk ); /* too far ahead */
+    }
+  }
+
+  /* Votes for slots behind root — rejected. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 4000+i } };
+    FD_TEST( !fd_notar_count_vote( notar, &voters[i], 50, &block_id ) );
+  }
+
+  /* Votes for slots way ahead of root — rejected. */
+
+  for( ulong i = 0; i < attacker_cnt; i++ ) {
+    fd_hash_t block_id = { .ul = { 5000+i } };
+    FD_TEST( !fd_notar_count_vote( notar, &voters[i], 200, &block_id ) );
+  }
+
+  /* Unknown voter — rejected. */
+
+  fd_pubkey_t unknown = { .ul = { 999 } };
+  fd_hash_t   block_id = { .ul = { 6000 } };
+  FD_TEST( !fd_notar_count_vote( notar, &unknown, 101, &block_id ) );
+
+  /* Honest voters can still vote normally. */
+
+  fd_hash_t honest_block_id = { .ul = { 7777 } };
+  ulong honest_slot = 105;
+  for( ulong i = attacker_cnt; i < vtr_max; i++ ) {
+    fd_notar_blk_t * blk = fd_notar_count_vote( notar, &voters[i], honest_slot, &honest_block_id );
+    FD_TEST( blk );
+  }
+  fd_notar_blk_t * honest_blk = fd_notar_blk_query( notar, &honest_block_id );
+  FD_TEST( honest_blk );
+  FD_TEST( honest_blk->stake==(vtr_max - attacker_cnt) );
+
+  fd_notar_delete( fd_notar_leave( notar ) );
+}
 
 int
 main( int argc, char ** argv ) {
   fd_boot( &argc, &argv );
 
-  ulong  page_cnt  = 1;
-  char * _page_sz  = "gigantic";
-  ulong  numa_idx  = fd_shmem_numa_idx( 0 );
-  fd_wksp_t * wksp = fd_wksp_new_anonymous( fd_cstr_to_shmem_page_sz( _page_sz ), page_cnt, fd_shmem_cpu_idx( numa_idx ), "wksp", 0UL );
-  FD_TEST( wksp );
-
-  // test_update_voters( wksp );
-
-  // fd_tower_restore( NULL, pubkey,  );
-  // test_tower_vote();
-  // test_tower_from_vote_acc_data_v1_14_11();
-  // test_tower_from_vote_acc_data_current();
+  test_notar_simple();
+  test_notar_spam_block_ids_per_slot();
+  test_notar_spam_many_slots();
 
   fd_halt();
   return 0;

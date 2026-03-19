@@ -12,21 +12,20 @@
    Solana reaches consensus via replay, but can "forward confirm" slots
    ahead of the replay tip by listening to vote txns from gossip or TPU.
    The larger max_live_slots (specified in configuration toml), the
-   further ahead slots can be cluster confirmed before they are
+further ahead slots can be cluster confirmed before they are
    replayed.
 
-   On the similarities and differences between fd_ghost / fd_tower vs.
-   fd_notar:
+   What's the difference between fd_notar and fd_ghost?
 
-   The reason both fd_ghost / fd_tower and fd_notar exist even though
-   they do seemingly similar things (tracking vote stake on blocks) is
-   because Solana implements the rules quite differently.
+   The reason both fd_ghost and fd_notar exist even though they do
+   seemingly similar things (tracking vote stake on blocks) is because
+   Solana implements the rules quite differently.
 
-   At a high-level, fd_ghost / fd_tower is based on vote accounts vs.
-   fd_notar which is based on vote _transactions_.  Everything in
-   fd_ghost / fd_tower is dependent on the vote account's state after
-   the vote txns have been replayed.  So we only have stake information
-   in fd_ghost / fd_tower for a block, if that block has been replayed.
+   At a high-level, fd_ghost is based on vote accounts vs. fd_notar
+   which is based on vote _transactions_.  Everything in fd_ghost is
+   dependent on the vote account's state after the vote txns have been
+   replayed.  So we only have stake information in fd_ghost for a block
+   if that block has been replayed.
 
    On the other hand, fd_notar processes vote transactions as they come
    in from gossip and TPU, so it does not have this same requirement
@@ -34,9 +33,9 @@
    transmission is unreliable, and notar provides a fallback mechanism
    for detecting votes for blocks we don't have.  fd_notar still ingests
    replay votes as well, so it is guaranteed to be a superset of the
-   votes tracked by fd_ghost / fd_tower, though note this assumption is
-   contingent on feature "Deprecate legacy vote instructions" because
-   notar only counts TowerSync ixs and ignores any other deprecated vote
+   votes tracked by fd_ghost, though note this assumption is contingent
+   on feature "Deprecate legacy vote instructions" because notar only
+   counts TowerSync ixs and ignores any other deprecated vote
    instructions.
 
    There are also differences in how votes are counted between the two.
@@ -53,6 +52,21 @@
    multiple forks at the same time if they vote on a fork then switch to
    a different one, unlike ghost.  notar uses both replay and gossip
    votes when counting stake.
+
+   What's the difference between fd_notar and fd_hfork?
+
+   fd_hfork detects hard forks that result from runtime execution
+   differences.  These manifest as different bank hashes for a given
+   block id, meaning validators agreed on which block to process but
+   arrived at different ledger states after executing it.  This indicates
+   a consensus bug (e.g. Firedancer and Agave disagree on the result of
+   executing transactions in a block).
+
+   fd_notar detects different block ids for a given slot, which
+   indicates equivocation by a leader: the leader produced multiple
+   different blocks for the same slot.  This is a different problem
+   entirely- it is about leader misbehavior rather than execution
+   divergence.
 
    A note on slots and block ids: vote transactions only contain the
    block_id of the last vote slot (and do not specify what block_ids
@@ -72,6 +86,7 @@
 
 #include "../fd_choreo_base.h"
 #include "../tower/fd_tower_voters.h"
+#include "../tower/fd_tower_stakes.h"
 
 #ifndef FD_NOTAR_PARANOID
 #define FD_NOTAR_PARANOID 1
@@ -82,27 +97,10 @@
 #define FD_NOTAR_FLAG_CONFIRMED_OPTIMISTIC (2)
 
 #define SET_NAME fd_notar_slot_vtrs
-#define SET_MAX  FD_VOTER_MAX
-#include "../../util/tmpl/fd_set.c"
-
-struct fd_notar_slot {
-  ulong slot;             /* map key, vote slot */
-  ulong parent_slot;      /* parent slot */
-  ulong prev_leader_slot; /* previous slot in which we were leader */
-  ulong stake;            /* amount of stake that has voted for this slot */
-  int   is_leader;        /* whether this slot was our own leader slot */
-  int   is_propagated;    /* whether this slot has reached 1/3 of stake */
-
-  fd_hash_t block_ids[FD_VOTER_MAX]; /* one block id per voter per slot */
-  ulong     block_ids_cnt;           /* count of block ids */
-
-  fd_notar_slot_vtrs_t vtrs[fd_notar_slot_vtrs_word_cnt]; /* who has voted for this slot, curr epoch */
-};
-typedef struct fd_notar_slot fd_notar_slot_t;
+#include "../../util/tmpl/fd_set_dynamic.c"
 
 struct fd_notar_blk {
-  fd_hash_t block_id;  /* map key */
-  uint      hash;      /* reserved for fd_map_dynamic */
+  fd_hash_t block_id;  /* blk_map key */
   ulong     slot;      /* slot associated with this block */
   ulong     stake;     /* sum of stake that has voted for this block_id */
   int       level;     /* confirmation level, set by caller */
@@ -110,81 +108,57 @@ struct fd_notar_blk {
 };
 typedef struct fd_notar_blk fd_notar_blk_t;
 
-#define MAP_NAME              fd_notar_blk
-#define MAP_T                 fd_notar_blk_t
-#define MAP_KEY               block_id
-#define MAP_KEY_T             fd_hash_t
-#define MAP_KEY_NULL          hash_null
-#define MAP_KEY_EQUAL_IS_SLOW 1
-#define MAP_KEY_INVAL(k)      MAP_KEY_EQUAL((k),MAP_KEY_NULL)
-#define MAP_KEY_EQUAL(k0,k1)  (!memcmp( (k0).key, (k1).key, 32UL ))
-#define MAP_KEY_HASH(key,s)   ((MAP_HASH_T)( (key).ul[1] ))
-#include "../../util/tmpl/fd_map_dynamic.c"
-
-/* TODO map key DOS */
-
-#define MAP_NAME           fd_notar_slot
-#define MAP_T              fd_notar_slot_t
-#define MAP_KEY            slot
-#define MAP_KEY_NULL       ULONG_MAX
-#define MAP_KEY_INVAL(key) ((key)==ULONG_MAX)
-#define MAP_MEMOIZE        0
-#include "../../util/tmpl/fd_map_dynamic.c"
-
 struct fd_notar_vtr {
-  fd_pubkey_t addr;  /* map key, vote account address */
-  uint        hash;  /* reserved for fd_map_dynamic */
+  fd_pubkey_t vote_acc;  /* vote account address */
   ulong       bit;   /* bit position in fd_notar_slot_vtrs in epoch (ULONG_MAX if not set) */
   ulong       stake; /* amount of stake this voter has in epoch */
 };
 typedef struct fd_notar_vtr fd_notar_vtr_t;
 
-#define MAP_NAME              fd_notar_vtr
-#define MAP_T                 fd_notar_vtr_t
-#define MAP_KEY               addr
-#define MAP_KEY_T             fd_pubkey_t
-#define MAP_KEY_NULL          pubkey_null
-#define MAP_KEY_EQUAL_IS_SLOW 1
-#define MAP_KEY_INVAL(k)      MAP_KEY_EQUAL((k),MAP_KEY_NULL)
-#define MAP_KEY_EQUAL(k0,k1)  (!memcmp( (k0).key, (k1).key, 32UL ))
-#define MAP_KEY_HASH(key,s)   ((MAP_HASH_T)( (key).ul[1] ))
-#include "../../util/tmpl/fd_map_dynamic.c"
+/* fd_notar_slot_t is backed by a pool + fd_map_chain (keyed by slot)
+   + dlist for iteration.  vtrs is a fd_set_dynamic tracking which
+   voters have voted for this slot.  blk_cnt tracks the number of
+   distinct block ids seen for this slot. */
 
-struct __attribute__((aligned(128UL))) fd_notar {
-  ulong             root;     /* current root slot */
-  ulong             slot_max; /* maximum number of slots notar can track */
-  fd_notar_slot_t * slot_map; /* tracks who has voted for a given slot */
-  fd_notar_blk_t *  blk_map;  /* tracks amount of stake for a given block (keyed by block id) */
-  fd_notar_vtr_t *  vtr_map;  /* tracks each voter's stake and prev vote */
+struct fd_notar_slot {
+  ulong  slot;             /* map key, vote slot */
+  ulong  parent_slot;      /* parent slot */
+  ulong  prev_leader_slot; /* previous slot in which we were leader */
+  ulong  stake;            /* amount of stake that has voted for this slot */
+  int    is_leader;        /* whether this slot was our own leader slot */
+  int    is_propagated;    /* whether this slot has reached 1/3 of stake */
+  ulong  blk_cnt;          /* number of distinct block ids for this slot */
+  void * blk_dlist;        /* blk_dlist_t *, opaque here since blk_t is internal */
+
+  fd_notar_slot_vtrs_t * vtrs;      /* who has voted for this slot, curr epoch */
+
+  ulong  next;             /* pool next */
+  struct {
+    ulong prev;
+    ulong next;
+  } map;                   /* slot_map chain */
+  struct {
+    ulong prev;
+    ulong next;
+  } dlist;                 /* slot_dlist */
 };
+typedef struct fd_notar_slot fd_notar_slot_t;
+
+struct fd_notar;
 typedef struct fd_notar fd_notar_t;
+
+FD_PROTOTYPES_BEGIN
 
 /* fd_notar_{align,footprint} return the required alignment and
    footprint of a memory region suitable for use as a notar.  align
    returns fd_notar_ALIGN.  footprint returns fd_notar_FOOTPRINT. */
 
-FD_FN_CONST static inline ulong
-fd_notar_align( void ) {
-  return alignof(fd_notar_t);
-}
+FD_FN_CONST ulong
+fd_notar_align( void );
 
-FD_FN_CONST static inline ulong
-fd_notar_footprint( ulong slot_max ) {
-  int lg_slot_max = fd_ulong_find_msb( fd_ulong_pow2_up( slot_max ) ) + 1;
-  int lg_blk_max  = fd_ulong_find_msb( fd_ulong_pow2_up( slot_max * FD_VOTER_MAX ) ) + 1;
-  int lg_vtr_max  = fd_ulong_find_msb( fd_ulong_pow2_up( FD_VOTER_MAX ) ) + 1;
-  return FD_LAYOUT_FINI(
-    FD_LAYOUT_APPEND(
-    FD_LAYOUT_APPEND(
-    FD_LAYOUT_APPEND(
-    FD_LAYOUT_APPEND(
-    FD_LAYOUT_INIT,
-      alignof(fd_notar_t),   sizeof(fd_notar_t)                     ),
-      fd_notar_slot_align(), fd_notar_slot_footprint( lg_slot_max ) ),
-      fd_notar_blk_align(),  fd_notar_blk_footprint( lg_blk_max )   ),
-      fd_notar_vtr_align(),  fd_notar_vtr_footprint( lg_vtr_max )   ),
-    fd_notar_align() );
-}
+ulong
+fd_notar_footprint( ulong slot_max,
+                    ulong vtr_max );
 
 /* fd_notar_new formats an unused memory region for use as a notar.  mem
    is a non-NULL pointer to this region in the local address space with
@@ -192,7 +166,9 @@ fd_notar_footprint( ulong slot_max ) {
 
 void *
 fd_notar_new( void * shmem,
-              ulong  slot_max );
+              ulong  slot_max,
+              ulong  vtr_max,
+              ulong  seed );
 
 /* fd_notar_join joins the caller to the notar.  notar points to the
    first byte of the memory region backing the notar in the caller's
@@ -219,19 +195,43 @@ fd_notar_leave( fd_notar_t const * notar );
 void *
 fd_notar_delete( void * notar );
 
-/* fd_notar_count_vote counts addr's stake towards the voted slots in
-   their tower.  Returns 1 if block_id is duplicate confirmed by this
-   vote, otherwise 0 (useful for the downstream tower tile to implement
-   duplicate confirmation notifications).  addr is the vote account
-   address, stake is the amount of stake associated with the vote
-   account in the current epoch, slot is slot being voted for, block_id
-   is the voter's proposed block id for this vote slot. */
+/* fd_notar_count_vote counts id's stake towards the voted slots in
+   their tower.  Returns a pointer to the notar_blk if it was updated,
+   otherwise NULL.  id is the vote account address, slot is slot being
+   voted for, block_id is the voter's proposed block id for this vote
+   slot. */
 
 fd_notar_blk_t *
 fd_notar_count_vote( fd_notar_t *        notar,
-                     fd_pubkey_t const * addr,
+                     fd_pubkey_t const * id,
                      ulong               slot,
                      fd_hash_t const *   block_id );
+
+/* fd_notar_blk_query returns a pointer to the notar_blk for the given
+   block_id, or NULL if not found. */
+
+fd_notar_blk_t *
+fd_notar_blk_query( fd_notar_t *      notar,
+                    fd_hash_t const * block_id );
+
+/* fd_notar_vtr_query returns a pointer to the notar_vtr for the given
+   vote account address, or NULL if not found. */
+
+fd_notar_vtr_t *
+fd_notar_vtr_query( fd_notar_t *        notar,
+                    fd_pubkey_t const * id );
+
+/* fd_notar_root returns the current root slot of notar.  Returns
+   ULONG_MAX if uninitialized. */
+
+ulong
+fd_notar_root( fd_notar_t const * notar );
+
+/* fd_notar_slot_query returns a pointer to the notar_slot for the given
+   vote slot, or NULL if not found. */
+
+fd_notar_slot_t *
+fd_notar_slot_query( fd_notar_t * notar, ulong slot );
 
 /* fd_notar_publish publishes root as the new notar root slot, removing
    all blocks with slot numbers < the old notar root slot.  Some slots
@@ -241,5 +241,20 @@ fd_notar_count_vote( fd_notar_t *        notar,
 void
 fd_notar_publish( fd_notar_t * notar,
                   ulong        root );
+
+/* fd_notar_update_voters updates the set of voters tracked by notar.
+   Voters not in tower_voters are removed.  New voters are added.
+   Existing voters get reindexed bit positions.  All existing slot vtrs
+   bit vectors are reindexed.  Stake is set from tower_stakes for each
+   voter.  We intentionally do NOT update stakes on existing vote counts
+   to match Agave behavior. */
+
+void
+fd_notar_update_voters( fd_notar_t *              notar,
+                        fd_tower_voters_t const * tower_voters,
+                        fd_tower_stakes_t *       tower_stakes,
+                        ulong                     root_slot );
+
+FD_PROTOTYPES_END
 
 #endif /* HEADER_fd_src_choreo_notar_fd_notar_h */

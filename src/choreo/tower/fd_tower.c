@@ -389,13 +389,13 @@ static int
 propagated_check( fd_notar_t * notar,
                   ulong        slot ) {
 
-  fd_notar_slot_t * notar_slot = fd_notar_slot_query( notar->slot_map, slot, NULL );
+  fd_notar_slot_t * notar_slot = fd_notar_slot_query( notar, slot );
   if( FD_UNLIKELY( !notar_slot ) ) return 1;
 
   if( FD_LIKELY( notar_slot->is_leader                   ) ) return 1; /* can always vote for slot in which we're leader */
   if( FD_LIKELY( notar_slot->prev_leader_slot==ULONG_MAX ) ) return 1; /* haven't been leader yet */
 
-  fd_notar_slot_t * prev_leader_notar_slot = fd_notar_slot_query( notar->slot_map, notar_slot->prev_leader_slot, NULL );
+  fd_notar_slot_t * prev_leader_notar_slot = fd_notar_slot_query( notar, notar_slot->prev_leader_slot );
   if( FD_LIKELY( !prev_leader_notar_slot ) ) return 1; /* already pruned rooted */
 
   return prev_leader_notar_slot->is_propagated;
@@ -435,9 +435,8 @@ fd_tower_vote_and_reset( fd_tower_t        * tower,
     };
   }
 
-  ulong              prev_vote_slot     = fd_tower_peek_tail_const( tower )->slot;
-  fd_tower_blk_t * prev_vote_fork     = fd_tower_blocks_query( blocks, prev_vote_slot );
-
+  ulong            prev_vote_slot = fd_tower_peek_tail_const( tower )->slot;
+  fd_tower_blk_t * prev_vote_fork = fd_tower_blocks_query( blocks, prev_vote_slot );
 
   if( FD_UNLIKELY( !prev_vote_fork->voted ) ) {
 
