@@ -263,14 +263,15 @@ test_cb_conn_final( fd_h2_conn_t * conn,
   test_conn_final_err = h2_err;
 }
 
-/* test_h2_buffer_guard exercises the buffer guard at fd_h2_conn.c:671
-   and related frame size checks.
+/* test_h2_buffer_guard exercises the fd_h2_rx1 "all or nothing"
+   buffer guard on oversized non-DATA frames and related frame size
+   checks.
 
    Background: Non-DATA frames are consumed "all or nothing", meaning
    the entire frame (header + payload) must fit in the rx ring buffer
    at once.  If a frame's total size exceeds the buffer capacity, it
    can never be consumed, causing a deadlock.  The buffer guard
-   detects this and issues a conn error instead. */
+   detects this condition and issues a conn error instead. */
 
 static void
 test_h2_buffer_guard( void ) {
