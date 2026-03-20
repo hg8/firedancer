@@ -529,7 +529,8 @@ test_h2_buffer_guard( void ) {
     fd_h2_rbuf_init( rbuf_tx, rbuf_tx_b, sizeof(rbuf_tx_b) );
 
     /* DATA frame with payload=24 -> tot_sz=33 > bufsz=32
-       But DATA takes the incremental path at line 654. */
+       But DATA takes the fd_h2_rx1 incremental receive path for
+       DATA frames (see the DATA-frame branch in fd_h2_rx1). */
     fd_h2_frame_hdr_t data_hdr = {
       .typlen      = fd_h2_frame_typlen( FD_H2_FRAME_TYPE_DATA, 24UL ),
       .flags       = 0,
