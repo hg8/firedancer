@@ -486,8 +486,8 @@ test_h2_buffer_guard( void ) {
     /* conn_final not yet called (GOAWAY not sent) */
     FD_TEST( test_conn_final_cnt == 0 );
 
-    /* PING ACK should be in tx buffer (we didn't have ping_tx set,
-       so unsolicited ping -> reflected as PING ACK) */
+    /* Receiving a PING frame generates a PING ACK, which should be
+       present in the tx buffer before GOAWAY is sent. */
     ulong tx_used_before_goaway = fd_h2_rbuf_used_sz( rbuf_tx );
     FD_TEST( tx_used_before_goaway == sizeof(fd_h2_ping_t) );
 
