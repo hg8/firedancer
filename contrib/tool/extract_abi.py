@@ -9,8 +9,15 @@ GLOB_DIR = "/tmp/*agave_validator*.o"
 from elftools import *
 from elftools.elf.elffile import ELFFile
 from elftools.dwarf.dwarfinfo import DWARFInfo
+import argparse
 import glob
+import io
 import re
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--sorted', action='store_true', help='Sort output by type name for vimdiff')
+args = parser.parse_args()
 
 base_type = None
 for opath in glob.glob(GLOB_DIR):
@@ -131,6 +138,10 @@ def c_escape(t, istype):
         start += "_t"
     return start
 
+if args.sorted:
+    _real_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+
 for offset, t in offset_to_typename.items():
     if str(t)==t: continue
     if not offset in offset_union_info:
@@ -165,3 +176,14 @@ for offset, t in offset_to_typename.items():
     print(f"FD_STATIC_ASSERT( sizeof({c_escape(t,1)})=={offset_to_type_sz[offset][0]}UL, bank_abi );")
     print(f"FD_STATIC_ASSERT( alignof({c_escape(t,1)})=={offset_to_type_sz[offset][1]}UL, bank_abi );")
     print()
+
+if args.sorted:
+    output = sys.stdout.getvalue()
+    sys.stdout = _real_stdout
+    blocks = re.split(r'\n{2,}', output.strip())
+    blocks.sort(key=lambda b:
+        m.group(1) if (m := re.search(r'}\s+(\w+)\s*;', b))
+        else f"zzz_{m.group(1)}" if (m := re.search(r'Skipping\s+(.*)', b))
+        else b
+    )
+    print('\n\n'.join(blocks) + '\n')
