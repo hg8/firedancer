@@ -81,8 +81,9 @@ def main(ctx, verbose):
 
 @main.command('start-cluster')
 @click.option('--bootstrap-validator-name', '-n', type=str, required=False, default='node-ledger-0', help='Bootstrap validator name')
+@click.option('--bind-address', type=str, required=False, default=None, help='Address to bind the RPC server to (default: auto-detected public IP). Use 0.0.0.0 to listen on all interfaces (useful for VM setups).')
 @click.pass_context
-def start_cluster(ctx, bootstrap_validator_name):
+def start_cluster(ctx, bootstrap_validator_name, bind_address):
     """Start an Agave cluster."""
     agave_path = get_env_var('AGAVE_RELEASE_PATH')
     verbose = ctx.obj['verbose']
@@ -183,7 +184,10 @@ def start_cluster(ctx, bootstrap_validator_name):
 
     agave_validator = solana_binary('agave-validator')
 
-    validator_process = subprocess.Popen([agave_validator, "--rpc-bind-address", f"{ip()}", "--allow-private-addr", "--enable-rpc-transaction-history", "--identity", id_key, "--ledger", node_path, "--limit-ledger-size", "100000000", "--dynamic-port-range", "8000-8099", "--no-snapshot-fetch", "--no-poh-speed-test", "--no-os-network-limits-test", "--vote-account", vote_key, "--expected-shred-version", shred_version, "--expected-genesis-hash", genesis_hash, "--no-wait-for-vote-to-start-leader", "--full-snapshot-interval-slots", "100" , "--snapshot-interval-slots", "20", "--maximum-full-snapshots-to-retain", "10", "--rpc-port", "8899", "--gossip-port", "8010", "--full-rpc-api", "--bind-address", ip(), "--log", f"{node_path}/validator.log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
+    rpc_bind_address = bind_address if bind_address else ip()
+    rpc_address = '127.0.0.1' if rpc_bind_address == '0.0.0.0' else rpc_bind_address
+
+    validator_process = subprocess.Popen([agave_validator, "--rpc-bind-address", rpc_bind_address, "--allow-private-addr", "--enable-rpc-transaction-history", "--identity", id_key, "--ledger", node_path, "--limit-ledger-size", "100000000", "--dynamic-port-range", "8000-8099", "--no-snapshot-fetch", "--no-poh-speed-test", "--no-os-network-limits-test", "--vote-account", vote_key, "--expected-shred-version", shred_version, "--expected-genesis-hash", genesis_hash, "--no-wait-for-vote-to-start-leader", "--full-snapshot-interval-slots", "100" , "--snapshot-interval-slots", "20", "--maximum-full-snapshots-to-retain", "10", "--rpc-port", "8899", "--gossip-port", "8010", "--full-rpc-api", "--bind-address", ip(), "--log", f"{node_path}/validator.log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setpgrp)
 
     validator_pid = validator_process.pid
     click.echo(f"Validator {bootstrap_validator_name} has started with pid {validator_pid}")
@@ -195,7 +199,7 @@ def start_cluster(ctx, bootstrap_validator_name):
 
     click.echo("Funding authority account...")
     solana = solana_binary('solana')
-    result = subprocess.run([solana, "-u", f"http://{ip()}:8899", "transfer", "-k", faucet_key, "--allow-unfunded-recipient", authority_key, "100"], capture_output=True, text=True)
+    result = subprocess.run([solana, "-u", f"http://{rpc_address}:8899", "transfer", "-k", faucet_key, "--allow-unfunded-recipient", authority_key, "100"], capture_output=True, text=True)
     if result.returncode != 0:
         click.echo(f"Warning: Failed to fund authority account: {result.stderr}", err=True)
         click.echo("Authority account will need to be funded manually before creating staked validators", err=True)
@@ -203,7 +207,7 @@ def start_cluster(ctx, bootstrap_validator_name):
         click.echo(f"Authority account funded: {get_pubkey(authority_key)}")
 
     click.echo(f"✅ Cluster started successfully at: {cluster_path}")
-    click.echo(f"Cluster URL: http://{ip()}:8899")
+    click.echo(f"Cluster URL: http://{rpc_address}:8899")
     click.echo(f"Node path: {node_path}")
     click.echo((f"Log file: {node_path}/validator.log"))
 
